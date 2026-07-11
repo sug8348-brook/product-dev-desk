@@ -1,5 +1,6 @@
 ﻿import React, { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { useEffect, useRef } from "react";
 import {
   Archive,
   CalendarDays,
@@ -7,6 +8,7 @@ import {
   ChevronRight,
   CircleDot,
   Clock3,
+  Download,
   FileText,
   Folder,
   Inbox,
@@ -14,10 +16,12 @@ import {
   ListChecks,
   Paperclip,
   Plus,
+  RotateCcw,
   Search,
   Settings,
   Tag,
   Trash2,
+  Upload,
 } from "lucide-react";
 import "./styles.css";
 
@@ -47,6 +51,7 @@ type Note = {
   id: string;
   title: string;
   type: string;
+  body: string;
   updatedAt: string;
 };
 
@@ -55,6 +60,7 @@ type Attachment = {
   name: string;
   kind: string;
   size: string;
+  note: string;
 };
 
 type Project = {
@@ -70,6 +76,14 @@ type Project = {
   notes: Note[];
   attachments: Attachment[];
 };
+
+type StoredBoardData = {
+  version: 1;
+  projects: Project[];
+};
+
+const STORAGE_KEY = "model-dev-board.projects.v1";
+const STORAGE_VERSION = 1;
 
 const initialProjects: Project[] = [
   {
@@ -124,12 +138,24 @@ const initialProjects: Project[] = [
       },
     ],
     notes: [
-      { id: "n1", title: "7月9日方案评审纪要", type: "评审纪要", updatedAt: "今天" },
-      { id: "n2", title: "样机阶段风险摘要", type: "阶段总结", updatedAt: "昨天" },
+      {
+        id: "n1",
+        title: "7月9日方案评审纪要",
+        type: "评审纪要",
+        body: "张紧机构采用偏心调节方案，导轨交期仍需供应商二次确认。",
+        updatedAt: "今天",
+      },
+      {
+        id: "n2",
+        title: "样机阶段风险摘要",
+        type: "阶段总结",
+        body: "样机风险集中在导轨、减速机和现场安装空间，需在下轮评审前完成复核。",
+        updatedAt: "昨天",
+      },
     ],
     attachments: [
-      { id: "a1", name: "BOM-样机版.xlsx", kind: "Spreadsheet", size: "82 KB" },
-      { id: "a2", name: "结构方案评审记录.docx", kind: "Document", size: "124 KB" },
+      { id: "a1", name: "BOM-样机版.xlsx", kind: "Spreadsheet", size: "82 KB", note: "样机采购清单" },
+      { id: "a2", name: "结构方案评审记录.docx", kind: "Document", size: "124 KB", note: "7月9日评审输出" },
     ],
   },
   {
@@ -159,8 +185,18 @@ const initialProjects: Project[] = [
         ],
       },
     ],
-    notes: [{ id: "n3", title: "控制箱设计输入草案", type: "机型说明", updatedAt: "昨天" }],
-    attachments: [{ id: "a3", name: "I-O点表.xlsx", kind: "Spreadsheet", size: "9 KB" }],
+    notes: [
+      {
+        id: "n3",
+        title: "控制箱设计输入草案",
+        type: "机型说明",
+        body: "先固化端子排、线束编号和散热验证边界，再进入样箱图纸冻结。",
+        updatedAt: "昨天",
+      },
+    ],
+    attachments: [
+      { id: "a3", name: "I-O点表.xlsx", kind: "Spreadsheet", size: "9 KB", note: "电气输入版本" },
+    ],
   },
   {
     id: "p3",
@@ -225,14 +261,230 @@ function clampProgress(value: number) {
   return Math.min(100, Math.max(0, value));
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isStatus(value: unknown): value is Status {
+  return value === "active" || value === "paused" || value === "blocked" || value === "done";
+}
+
+function isTaskStatus(value: unknown): value is TaskStatus {
+  return value === "todo" || value === "doing" || value === "blocked" || value === "done";
+}
+
+function isPriority(value: unknown): value is Priority {
+  return value === "low" || value === "medium" || value === "high" || value === "urgent";
+}
+
+function toStringValue(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function toStringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function normalizeTask(value: unknown): WorkTask | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+
+  return {
+    id: value.id,
+    title: toStringValue(value.title, "未命名作业"),
+    status: isTaskStatus(value.status) ? value.status : "todo",
+    priority: isPriority(value.priority) ? value.priority : "medium",
+    due: toStringValue(value.due, "未设置"),
+    tags: toStringArray(value.tags),
+  };
+}
+
+function normalizeSubProject(value: unknown): SubProject | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+
+  return {
+    id: value.id,
+    title: toStringValue(value.title, "未命名对应内容"),
+    status: isStatus(value.status) ? value.status : "active",
+    progress: clampProgress(Number(value.progress)),
+    tasks: Array.isArray(value.tasks) ? value.tasks.map(normalizeTask).filter((task): task is WorkTask => task !== null) : [],
+  };
+}
+
+function normalizeNote(value: unknown): Note | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+
+  return {
+    id: value.id,
+    title: toStringValue(value.title, "未命名提要"),
+    type: toStringValue(value.type, "机型说明"),
+    body: toStringValue(value.body),
+    updatedAt: toStringValue(value.updatedAt, "未知"),
+  };
+}
+
+function normalizeAttachment(value: unknown): Attachment | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+
+  return {
+    id: value.id,
+    name: toStringValue(value.name, "未命名附件"),
+    kind: toStringValue(value.kind, "Document"),
+    size: toStringValue(value.size, "未填写"),
+    note: toStringValue(value.note),
+  };
+}
+
+function normalizeProject(value: unknown): Project | null {
+  if (!isRecord(value) || typeof value.id !== "string") return null;
+
+  return {
+    id: value.id,
+    title: toStringValue(value.title, "未命名规划机型"),
+    description: toStringValue(value.description),
+    status: isStatus(value.status) ? value.status : "paused",
+    priority: isPriority(value.priority) ? value.priority : "medium",
+    progress: clampProgress(Number(value.progress)),
+    updatedAt: toStringValue(value.updatedAt, "未知"),
+    tags: toStringArray(value.tags),
+    subprojects: Array.isArray(value.subprojects)
+      ? value.subprojects
+          .map(normalizeSubProject)
+          .filter((subproject): subproject is SubProject => subproject !== null)
+      : [],
+    notes: Array.isArray(value.notes)
+      ? value.notes.map(normalizeNote).filter((note): note is Note => note !== null)
+      : [],
+    attachments: Array.isArray(value.attachments)
+      ? value.attachments
+          .map(normalizeAttachment)
+          .filter((attachment): attachment is Attachment => attachment !== null)
+      : [],
+  };
+}
+
+function normalizeProjectList(value: unknown) {
+  if (!Array.isArray(value)) return null;
+
+  const projects = value
+    .map(normalizeProject)
+    .filter((project): project is Project => project !== null);
+
+  return projects.length > 0 ? projects : null;
+}
+
+function parseStoredBoardData(value: unknown) {
+  if (!isRecord(value) || value.version !== STORAGE_VERSION || !Array.isArray(value.projects)) {
+    return null;
+  }
+
+  return normalizeProjectList(value.projects);
+}
+
+function loadStoredProjects() {
+  try {
+    const rawData = window.localStorage.getItem(STORAGE_KEY);
+    if (!rawData) return initialProjects;
+
+    const parsedData = JSON.parse(rawData) as unknown;
+    const projects = parseStoredBoardData(parsedData);
+
+    return projects ?? initialProjects;
+  } catch {
+    return initialProjects;
+  }
+}
+
+function saveProjects(projects: Project[]) {
+  const data: StoredBoardData = {
+    version: STORAGE_VERSION,
+    projects,
+  };
+
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // Keep the board usable even if the browser refuses local storage.
+  }
+}
+
+function confirmDelete(targetName: string) {
+  return window.confirm(`确定要删除「${targetName}」吗？此操作会立即保存到本地。`);
+}
+
 function App() {
-  const [projects, setProjects] = useState(initialProjects);
-  const [selectedProjectId, setSelectedProjectId] = useState(initialProjects[0].id);
+  const [projects, setProjects] = useState<Project[]>(() => loadStoredProjects());
+  const [selectedProjectId, setSelectedProjectId] = useState(() => projects[0]?.id ?? initialProjects[0].id);
   const [activePanel, setActivePanel] = useState<"project" | "notes" | "attachments">("project");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ProjectFilter>("all");
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0];
+
+  useEffect(() => {
+    saveProjects(projects);
+  }, [projects]);
+
+  useEffect(() => {
+    if (!projects.some((project) => project.id === selectedProjectId)) {
+      setSelectedProjectId(projects[0]?.id ?? initialProjects[0].id);
+      setActivePanel("project");
+    }
+  }, [projects, selectedProjectId]);
+
+  function replaceProjects(nextProjects: Project[]) {
+    setProjects(nextProjects);
+    setSelectedProjectId(nextProjects[0]?.id ?? initialProjects[0].id);
+    setFilter("all");
+    setActivePanel("project");
+  }
+
+  function exportData() {
+    const data: StoredBoardData = {
+      version: STORAGE_VERSION,
+      projects,
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const dateLabel = new Date().toISOString().slice(0, 10);
+
+    link.href = url;
+    link.download = `model-dev-board-${dateLabel}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importData(file: File) {
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      try {
+        const parsedData = JSON.parse(String(reader.result)) as unknown;
+        const importedProjects = parseStoredBoardData(parsedData);
+
+        if (!importedProjects) {
+          window.alert("导入失败：文件格式或版本不匹配。");
+          return;
+        }
+
+        if (!window.confirm("导入会替换当前看板数据，确定继续吗？")) return;
+
+        replaceProjects(importedProjects);
+      } catch {
+        window.alert("导入失败：无法解析这个 JSON 文件。");
+      }
+    };
+
+    reader.readAsText(file);
+  }
+
+  function resetData() {
+    if (!window.confirm("确定要恢复内置示例数据吗？当前本地编辑会被替换。")) return;
+
+    window.localStorage.removeItem(STORAGE_KEY);
+    replaceProjects(initialProjects);
+  }
 
   const filteredProjects = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -312,6 +564,8 @@ function App() {
 
   function deleteProject(projectId: string) {
     if (projects.length <= 1) return;
+    const projectToDelete = projects.find((project) => project.id === projectId);
+    if (!confirmDelete(projectToDelete?.title ?? "这个规划机型")) return;
 
     setProjects((current) => {
       const nextProjects = current.filter((project) => project.id !== projectId);
@@ -327,6 +581,8 @@ function App() {
 
   function deleteSubProject(subProjectId: string) {
     if (!selectedProject) return;
+    const subProjectToDelete = selectedProject.subprojects.find((subproject) => subproject.id === subProjectId);
+    if (!confirmDelete(subProjectToDelete?.title ?? "这个对应内容")) return;
 
     setProjects((current) =>
       current.map((project) =>
@@ -343,6 +599,10 @@ function App() {
 
   function deleteTask(subProjectId: string, taskId: string) {
     if (!selectedProject) return;
+    const taskToDelete = selectedProject.subprojects
+      .find((subproject) => subproject.id === subProjectId)
+      ?.tasks.find((task) => task.id === taskId);
+    if (!confirmDelete(taskToDelete?.title ?? "这个作业")) return;
 
     setProjects((current) =>
       current.map((project) =>
@@ -363,6 +623,109 @@ function App() {
       ),
     );
   }
+
+  function addNote() {
+    const newNote: Note = {
+      id: `n${Date.now()}`,
+      title: "新提要",
+      type: "机型说明",
+      body: "记录这条提要的背景、结论或待跟进事项。",
+      updatedAt: "刚刚",
+    };
+
+    setProjects((current) =>
+      current.map((project) =>
+        project.id !== selectedProject.id
+          ? project
+          : { ...project, updatedAt: "刚刚", notes: [newNote, ...project.notes] },
+      ),
+    );
+  }
+
+  function updateNote(noteId: string, patch: Partial<Note>) {
+    setProjects((current) =>
+      current.map((project) =>
+        project.id !== selectedProject.id
+          ? project
+          : {
+              ...project,
+              updatedAt: "刚刚",
+              notes: project.notes.map((note) =>
+                note.id === noteId ? { ...note, ...patch, updatedAt: patch.updatedAt ?? "刚刚" } : note,
+              ),
+            },
+      ),
+    );
+  }
+
+  function deleteNote(noteId: string) {
+    const noteToDelete = selectedProject.notes.find((note) => note.id === noteId);
+    if (!confirmDelete(noteToDelete?.title ?? "这个提要")) return;
+
+    setProjects((current) =>
+      current.map((project) =>
+        project.id !== selectedProject.id
+          ? project
+          : {
+              ...project,
+              updatedAt: "刚刚",
+              notes: project.notes.filter((note) => note.id !== noteId),
+            },
+      ),
+    );
+  }
+
+  function addAttachment() {
+    const newAttachment: Attachment = {
+      id: `a${Date.now()}`,
+      name: "新附件记录",
+      kind: "Document",
+      size: "未填写",
+      note: "记录附件用途、版本或存放位置。",
+    };
+
+    setProjects((current) =>
+      current.map((project) =>
+        project.id !== selectedProject.id
+          ? project
+          : { ...project, updatedAt: "刚刚", attachments: [newAttachment, ...project.attachments] },
+      ),
+    );
+  }
+
+  function updateAttachment(attachmentId: string, patch: Partial<Attachment>) {
+    setProjects((current) =>
+      current.map((project) =>
+        project.id !== selectedProject.id
+          ? project
+          : {
+              ...project,
+              updatedAt: "刚刚",
+              attachments: project.attachments.map((attachment) =>
+                attachment.id === attachmentId ? { ...attachment, ...patch } : attachment,
+              ),
+            },
+      ),
+    );
+  }
+
+  function deleteAttachment(attachmentId: string) {
+    const attachmentToDelete = selectedProject.attachments.find((attachment) => attachment.id === attachmentId);
+    if (!confirmDelete(attachmentToDelete?.name ?? "这个附件记录")) return;
+
+    setProjects((current) =>
+      current.map((project) =>
+        project.id !== selectedProject.id
+          ? project
+          : {
+              ...project,
+              updatedAt: "刚刚",
+              attachments: project.attachments.filter((attachment) => attachment.id !== attachmentId),
+            },
+      ),
+    );
+  }
+
   function addProject() {
     const nextIndex = projects.length + 1;
     const newProject: Project = {
@@ -515,10 +878,36 @@ function App() {
           ))}
         </section>
 
-        <button className="settings-button">
-          <Settings size={17} />
-          设置
-        </button>
+        <div className="data-actions" aria-label="数据工具">
+          <input
+            ref={importInputRef}
+            className="visually-hidden"
+            type="file"
+            accept="application/json,.json"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) importData(file);
+              event.target.value = "";
+            }}
+            aria-label="导入 JSON 数据"
+          />
+          <button className="settings-button" onClick={exportData}>
+            <Download size={17} />
+            导出数据
+          </button>
+          <button className="settings-button" onClick={() => importInputRef.current?.click()}>
+            <Upload size={17} />
+            导入数据
+          </button>
+          <button className="settings-button" onClick={resetData}>
+            <RotateCcw size={17} />
+            重置示例
+          </button>
+          <button className="settings-button">
+            <Settings size={17} />
+            设置
+          </button>
+        </div>
       </aside>
 
       <section className="workspace">
@@ -677,8 +1066,22 @@ function App() {
                 canDelete={projects.length > 1}
               />
             )}
-            {activePanel === "notes" && <NotesDrawer notes={selectedProject.notes} />}
-            {activePanel === "attachments" && <AttachmentsDrawer attachments={selectedProject.attachments} />}
+            {activePanel === "notes" && (
+              <NotesDrawer
+                notes={selectedProject.notes}
+                onAdd={addNote}
+                onChange={updateNote}
+                onDelete={deleteNote}
+              />
+            )}
+            {activePanel === "attachments" && (
+              <AttachmentsDrawer
+                attachments={selectedProject.attachments}
+                onAdd={addAttachment}
+                onChange={updateAttachment}
+                onDelete={deleteAttachment}
+              />
+            )}
           </aside>
         </section>
       </section>
@@ -899,12 +1302,22 @@ function ProjectDrawer({
   );
 }
 
-function NotesDrawer({ notes }: { notes: Note[] }) {
+function NotesDrawer({
+  notes,
+  onAdd,
+  onChange,
+  onDelete,
+}: {
+  notes: Note[];
+  onAdd: () => void;
+  onChange: (noteId: string, patch: Partial<Note>) => void;
+  onDelete: (noteId: string) => void;
+}) {
   return (
     <div className="drawer-section">
       <div className="drawer-heading">
         <h2>提要</h2>
-        <button className="icon-button" aria-label="添加提要">
+        <button className="icon-button" onClick={onAdd} aria-label="添加提要">
           <Plus size={16} />
         </button>
       </div>
@@ -912,12 +1325,46 @@ function NotesDrawer({ notes }: { notes: Note[] }) {
         <div className="empty-mini">还没有提要。</div>
       ) : (
         notes.map((note) => (
-          <div className="note-item" key={note.id}>
-            <FileText size={17} />
-            <div>
-              <strong>{note.title}</strong>
-              <span>{note.type} · {note.updatedAt}</span>
+          <div className="note-item editable-note-item" key={note.id}>
+            <FileText size={17} className="item-icon" />
+            <div className="item-editor">
+              <input
+                value={note.title}
+                onChange={(event) => onChange(note.id, { title: event.target.value })}
+                aria-label="提要标题"
+              />
+              <div className="form-grid-two">
+                <select
+                  value={note.type}
+                  onChange={(event) => onChange(note.id, { type: event.target.value })}
+                  aria-label="提要类型"
+                >
+                  <option value="机型说明">机型说明</option>
+                  <option value="评审纪要">评审纪要</option>
+                  <option value="阶段总结">阶段总结</option>
+                  <option value="风险记录">风险记录</option>
+                </select>
+                <input
+                  value={note.updatedAt}
+                  onChange={(event) => onChange(note.id, { updatedAt: event.target.value })}
+                  aria-label="提要更新时间"
+                />
+              </div>
+              <textarea
+                rows={3}
+                value={note.body}
+                onChange={(event) => onChange(note.id, { body: event.target.value })}
+                aria-label="提要内容"
+              />
             </div>
+            <button
+              className="danger-icon-button"
+              onClick={() => onDelete(note.id)}
+              aria-label="删除提要"
+              title="删除提要"
+            >
+              <Trash2 size={15} />
+            </button>
           </div>
         ))
       )}
@@ -925,12 +1372,22 @@ function NotesDrawer({ notes }: { notes: Note[] }) {
   );
 }
 
-function AttachmentsDrawer({ attachments }: { attachments: Attachment[] }) {
+function AttachmentsDrawer({
+  attachments,
+  onAdd,
+  onChange,
+  onDelete,
+}: {
+  attachments: Attachment[];
+  onAdd: () => void;
+  onChange: (attachmentId: string, patch: Partial<Attachment>) => void;
+  onDelete: (attachmentId: string) => void;
+}) {
   return (
     <div className="drawer-section">
       <div className="drawer-heading">
         <h2>附件</h2>
-        <button className="icon-button" aria-label="添加附件">
+        <button className="icon-button" onClick={onAdd} aria-label="添加附件">
           <Plus size={16} />
         </button>
       </div>
@@ -938,12 +1395,41 @@ function AttachmentsDrawer({ attachments }: { attachments: Attachment[] }) {
         <div className="empty-mini">还没有附件。</div>
       ) : (
         attachments.map((attachment) => (
-          <div className="attachment-item" key={attachment.id}>
-            <Paperclip size={17} />
-            <div>
-              <strong>{attachment.name}</strong>
-              <span>{attachment.kind} · {attachment.size}</span>
+          <div className="attachment-item editable-note-item" key={attachment.id}>
+            <Paperclip size={17} className="item-icon" />
+            <div className="item-editor">
+              <input
+                value={attachment.name}
+                onChange={(event) => onChange(attachment.id, { name: event.target.value })}
+                aria-label="附件名称"
+              />
+              <div className="form-grid-two">
+                <input
+                  value={attachment.kind}
+                  onChange={(event) => onChange(attachment.id, { kind: event.target.value })}
+                  aria-label="附件类型"
+                />
+                <input
+                  value={attachment.size}
+                  onChange={(event) => onChange(attachment.id, { size: event.target.value })}
+                  aria-label="附件大小"
+                />
+              </div>
+              <textarea
+                rows={2}
+                value={attachment.note}
+                onChange={(event) => onChange(attachment.id, { note: event.target.value })}
+                aria-label="附件备注"
+              />
             </div>
+            <button
+              className="danger-icon-button"
+              onClick={() => onDelete(attachment.id)}
+              aria-label="删除附件"
+              title="删除附件"
+            >
+              <Trash2 size={15} />
+            </button>
           </div>
         ))
       )}
