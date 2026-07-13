@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, statSync, writeFileSync } from "node:fs";
 import { extname, join, normalize, resolve } from "node:path";
 import { createServer } from "node:http";
 
@@ -72,7 +72,9 @@ function listen(port, attemptsLeft = 10) {
   });
 
   server.listen(port, host, () => {
-    console.log(`Preview server running at http://${host}:${port}/`);
+    const url = `http://${host}:${port}/`;
+    writeFileSync(".preview-url.txt", `${url}\n`);
+    console.log(`Preview server running at ${url}`);
   });
 }
 

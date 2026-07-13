@@ -4,6 +4,7 @@ dist/
 .dev-server.err.log
 .preview.log
 .preview.err.log
+.preview-url.txt
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts

@@ -35,6 +35,65 @@ button {
   min-height: 100vh;
 }
 
+.app-notice {
+  position: fixed;
+  top: 18px;
+  right: 22px;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: 18px minmax(180px, 1fr) 26px;
+  gap: 10px;
+  align-items: center;
+  max-width: 420px;
+  min-height: 44px;
+  padding: 9px 9px 9px 12px;
+  border: 1px solid #ded8cb;
+  border-radius: 8px;
+  color: #3f3b32;
+  background: #fffdfa;
+  box-shadow: 0 16px 34px rgba(44, 40, 32, 0.14);
+}
+
+.app-notice span {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.app-notice button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+}
+
+.app-notice button:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.app-notice.success {
+  border-color: #b7d8c4;
+  color: #24594f;
+  background: #edf7f1;
+}
+
+.app-notice.error {
+  border-color: #e5b4ad;
+  color: #8f342a;
+  background: #fff3f1;
+}
+
+.app-notice.info {
+  border-color: #d8d1c3;
+  color: #5d574c;
+  background: #fffdfa;
+}
+
 .sidebar {
   display: flex;
   flex-direction: column;
@@ -176,6 +235,21 @@ button {
   font-size: 12px;
 }
 
+.factory-nav-tag {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-height: 22px;
+  margin-top: 7px;
+  padding: 0 7px;
+  overflow: hidden;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .status-dot {
   width: 8px;
   height: 8px;
@@ -246,6 +320,53 @@ button {
 .data-actions .settings-button {
   margin-top: 0;
   width: 100%;
+}
+
+.settings-button.active {
+  color: #1f4f46;
+  background: #e6f0ea;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid #ded8cb;
+  border-radius: 8px;
+  background: #fffdfa;
+}
+
+.settings-panel .section-heading {
+  margin-bottom: 0;
+  padding: 0;
+}
+
+.settings-add-control {
+  grid-template-columns: minmax(0, 1fr) 70px;
+}
+
+.factory-option-list {
+  display: grid;
+  gap: 7px;
+}
+
+.factory-option-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 8px;
+  align-items: center;
+}
+
+.factory-option-item span {
+  display: block;
+  min-width: 0;
+  padding: 5px 8px;
+  overflow: hidden;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .visually-hidden {
@@ -420,7 +541,7 @@ h1 {
 }
 
 .summary-tags span,
-.task-tags small {
+.task-status {
   padding: 4px 8px;
   border-radius: 99px;
   color: #565044;
@@ -485,6 +606,19 @@ h1 {
   background: #f2eee6;
 }
 
+.collapse-icon {
+  transform: rotate(90deg);
+  transition: transform 0.18s ease;
+}
+
+.subproject-card.collapsed .collapse-icon {
+  transform: rotate(0deg);
+}
+
+.subproject-card.collapsed .subproject-header {
+  margin-bottom: 0;
+}
+
 .subproject-header h3 {
   margin: 0 0 7px;
   font-size: 15px;
@@ -539,11 +673,6 @@ h1 {
   margin-top: 4px;
   color: #777064;
   font-size: 12px;
-}
-
-.task-tags {
-  display: flex;
-  gap: 6px;
 }
 
 .quick-panel {
@@ -701,7 +830,8 @@ h1 {
 }
 
 .form-stack label,
-.mini-number {
+.mini-number,
+.date-control {
   display: grid;
   gap: 6px;
   color: #756e61;
@@ -714,7 +844,9 @@ h1 {
 .form-stack select,
 .subproject-editor input,
 .subproject-editor select,
+.date-control input,
 .task-editor input,
+.task-editor textarea,
 .task-editor select,
 .mini-number input,
 .item-editor input,
@@ -731,6 +863,7 @@ h1 {
 }
 
 .form-stack textarea,
+.task-editor textarea,
 .item-editor textarea {
   resize: vertical;
   line-height: 1.5;
@@ -741,7 +874,9 @@ h1 {
 .form-stack select:focus,
 .subproject-editor input:focus,
 .subproject-editor select:focus,
+.date-control input:focus,
 .task-editor input:focus,
+.task-editor textarea:focus,
 .task-editor select:focus,
 .mini-number input:focus,
 .item-editor input:focus,
@@ -787,12 +922,31 @@ h1 {
   align-items: center;
 }
 
+.inline-add-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.inline-add-control .ghost-button {
+  min-width: 78px;
+  white-space: nowrap;
+}
+
 .inline-controls select {
   max-width: 120px;
 }
 
 .mini-number {
   grid-template-columns: auto 72px;
+  align-items: center;
+  color: #777064;
+  font-weight: 600;
+}
+
+.date-control {
+  grid-template-columns: auto 144px;
   align-items: center;
   color: #777064;
   font-weight: 600;
@@ -825,14 +979,75 @@ h1 {
 
 .task-control-grid {
   display: grid;
-  grid-template-columns: 112px 124px 96px minmax(120px, 1fr);
+  grid-template-columns: 112px 124px 132px minmax(120px, 1fr);
   gap: 7px;
 }
 
 .task-control-grid input,
-.task-control-grid select {
+.task-control-grid select,
+.memo-toggle {
   min-height: 30px;
   font-size: 12px;
+}
+
+.memo-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #d9d2c3;
+  border-radius: 8px;
+  padding: 0 9px;
+  color: #5f594d;
+  background: #fff;
+}
+
+.memo-toggle.has-memo {
+  color: #2f6f62;
+  background: #edf5f0;
+}
+
+.memo-toggle svg:last-child {
+  transition: transform 0.18s ease;
+}
+
+.memo-toggle[aria-expanded="true"] svg:last-child {
+  transform: rotate(180deg);
+}
+
+.task-memo-input {
+  min-height: 74px;
+  font-size: 12px;
+}
+
+.task-status-slot {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 64px;
+}
+
+.task-status {
+  white-space: nowrap;
+}
+
+.task-status.todo {
+  color: #5f594d;
+  background: #f1ede5;
+}
+
+.task-status.doing {
+  color: #6f4f00;
+  background: #fff2bd;
+}
+
+.task-status.blocked {
+  color: #9d3b2f;
+  background: #f8ded9;
+}
+
+.task-status.done {
+  color: #2f6f62;
+  background: #dff0e7;
 }
 
 @media (max-width: 1180px) {
