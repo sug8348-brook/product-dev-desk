@@ -19,6 +19,8 @@ function App() {
     replaceBoardData: replaceStoredBoardData,
     resetBoardData,
     repository,
+    loadError,
+    saveError,
   } = useBoardData();
   const [selectedProjectId, setSelectedProjectId] = useState(() => projects[0]?.id ?? initialProjects[0].id);
   const [activePanel, setActivePanel] = useState<ActivePanel>("project");
@@ -30,6 +32,18 @@ function App() {
   const notice = useNotice();
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? projects[0];
+
+  useEffect(() => {
+    if (loadError) {
+      notice.showError("本地数据加载失败，已使用内置示例数据。");
+    }
+  }, [loadError]);
+
+  useEffect(() => {
+    if (saveError) {
+      notice.showError("本地数据保存失败，请检查桌面数据库状态。");
+    }
+  }, [saveError]);
 
   useEffect(() => {
     if (!projects.some((project) => project.id === selectedProjectId)) {

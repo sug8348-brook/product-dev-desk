@@ -29,7 +29,7 @@ type UseBoardActionsParams = {
   setProjects: Dispatch<SetStateAction<Project[]>>;
   setFactoryOptions: Dispatch<SetStateAction<string[]>>;
   replaceStoredBoardData: (nextBoardData: BoardData) => void;
-  resetBoardData: () => BoardData;
+  resetBoardData: () => Promise<BoardData>;
   setSelectedProjectId: Dispatch<SetStateAction<string>>;
   setActivePanel: Dispatch<SetStateAction<ActivePanel>>;
   setFilter: Dispatch<SetStateAction<ProjectFilter>>;
@@ -110,11 +110,15 @@ export function useBoardActions({
     reader.readAsText(file);
   }
 
-  function resetData() {
+  async function resetData() {
     if (!window.confirm("确定要恢复内置示例数据吗？当前本地编辑会被替换。")) return;
 
-    syncBoardSelection(resetBoardData());
-    notify.success("已恢复内置示例数据。");
+    try {
+      syncBoardSelection(await resetBoardData());
+      notify.success("已恢复内置示例数据。");
+    } catch {
+      notify.error("重置失败：无法写入本地数据库。");
+    }
   }
 
   function addFactoryOption(factoryName: string) {

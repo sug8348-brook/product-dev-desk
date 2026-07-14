@@ -60,12 +60,22 @@ npm run preview
 | 状态管理 | React useState / useMemo | 当前 MVP 使用 |
 | 状态提示 | useNotice / AppNotice | 已接入轻量提示 |
 | 业务动作层 | useBoardActions | 已抽出 |
-| 数据访问层 | BoardRepository / useBoardData | 已抽出 localStorage 实现 |
-| 本地持久化 | localStorage | 已作为 repository 实现 |
-| 数据库 | SQLite | Tauri 桌面化阶段再接入 |
+| 数据访问层 | BoardRepository / useBoardData | 已兼容同步/异步 repository |
+| 本地持久化 | localStorage / SQLite | 浏览器走 localStorage，Tauri 桌面走 SQLite |
+| 数据库 | SQLite | Schema、migration、映射层、Tauri SQL 插件和重启恢复验收已完成 |
 | ORM | Drizzle ORM | 规划中 |
-| 桌面封装 | Tauri | 规划中 |
+| 桌面封装 | Tauri | 已初始化并可构建安装包 |
 | 测试 | 暂未接入 | 待实现 |
+
+SQLite migration 已于 2026-07-13 使用内存数据库完成一次基础验证：5 个 migration 可顺序执行，默认数据可 seed，项目、对应内容、作业、笔记、附件、标签关系可写入，附件单一归属约束可生效。
+
+SQLite 代码层已抽出 `sqliteBoardMapper.ts`、`sqliteBoardRepository.ts` 和 `tauriSqliteBoardDriver.ts`。浏览器预览环境自动使用 `localStorage`，Tauri 桌面环境自动使用 SQLite。
+
+`useBoardData` 已改为兼容同步/异步 repository：加载完成前不会触发保存，避免未来 SQLite 异步读取尚未完成时被内置示例数据覆盖。
+
+Tauri 已于 2026-07-13 初始化并完成构建验证：`cargo check` 通过，`npm run tauri -- build --debug` 成功生成 MSI 与 NSIS 安装包，构建出的 `app.exe` 已完成启动冒烟验证。当前使用 Rust `1.88.0-x86_64-pc-windows-msvc` 工具链验证通过。
+
+SQLite 桌面端持久化已于 2026-07-14 完成基础验收：Tauri SQL 插件权限已补充 `sql:allow-execute`，桌面端启动后可将内置项目写入 `product-dev-desk.db`，重启后可从 SQLite 恢复 3 个项目、3 个对应内容、4 个作业、3 条提要、3 条附件元数据、11 个标签关联和 3 个备选工厂。
 
 当前 `package.json` 脚本：
 
@@ -73,7 +83,10 @@ npm run preview
 {
   "dev": "vite --host 127.0.0.1",
   "build": "tsc -b && vite build",
-  "preview": "node scripts/preview-dist.mjs"
+  "preview": "node scripts/preview-dist.mjs",
+  "tauri": "tauri",
+  "desktop": "tauri dev",
+  "desktop:build": "tauri build"
 }
 ```
 
@@ -264,6 +277,384 @@ type Attachment = {
 
 当前支持附件元数据的新增、编辑、删除，字段包含名称、类型、大小和备注。尚未接入真实本地文件系统。
 
+## 6.6 SQLite Schema 草案
+
+SQLite 阶段优先服务当前本地个人工作看板 MVP，同时为未来“自然语言需求 -> 树状图/思维导图 -> 垂直领域本地看板应用”的生成流程保留架构出口。当前不实现完整低代码平台，也不把所有数据塞进万能 `nodes` 表。
+
+### 6.6.1 设计原则
+
+- 使用 SQLite 原生能力，启动时必须执行 `PRAGMA foreign_keys = ON;`。
+- 所有主表使用 `TEXT` 类型稳定 ID，建议由应用层生成 UUID。
+- 所有主要表包含 `created_at` 和 `updated_at`。
+- 时间字段统一存 UTC ISO-8601 字符串，例如 `2026-07-13T10:30:00.000Z`。
+- 核心业务字段保持可查询、可约束、可迁移，不只存在 JSON 中。
+- JSON 仅用于低频展示配置，例如 `layout_config`、`metadata_json`。
+- 当前优先清晰业务表；未来抽象能力通过 `entity_type_configs`、`view_type`、`layout_config`、`sort_order`、`parent_id` 预留。
+
+### 6.6.2 数据表清单
+
+| 表 | 用途 |
+|---|---|
+| `workspaces` | 本地看板空间，当前可只有一个默认 workspace |
+| `entity_type_configs` | 内部类型与用户显示名称、颜色、图标的映射 |
+| `projects` | 当前规划机型/项目 |
+| `project_sections` | 当前对应内容/模块/阶段 |
+| `tasks` | 作业/待办 |
+| `notes` | 提要、备注、记录 |
+| `attachments` | 附件数据库索引，不存文件本体 |
+| `tags` | 标签字典 |
+| `entity_tags` | 标签与项目、任务、笔记的关联 |
+| `factory_options` | 备选工厂 |
+| `settings` | 简单全局配置 |
+| `schema_migrations` | migration 版本记录 |
+
+### 6.6.3 核心 SQL 草案
+
+```sql
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE workspaces (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE entity_type_configs (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  system_type TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  icon TEXT,
+  color TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_enabled INTEGER NOT NULL DEFAULT 1,
+  view_type TEXT,
+  layout_config TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(workspace_id, system_type)
+);
+
+CREATE TABLE projects (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'paused',
+  priority TEXT NOT NULL DEFAULT 'medium',
+  progress INTEGER NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),
+  development_factory TEXT NOT NULL DEFAULT '',
+  manufacturing_factory TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_pinned INTEGER NOT NULL DEFAULT 0,
+  is_archived INTEGER NOT NULL DEFAULT 0,
+  metadata_json TEXT,
+  display_updated_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE project_sections (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  parent_id TEXT REFERENCES project_sections(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  due_date TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  depth INTEGER NOT NULL DEFAULT 0 CHECK(depth BETWEEN 0 AND 2),
+  is_collapsed INTEGER NOT NULL DEFAULT 0,
+  view_type TEXT NOT NULL DEFAULT 'collapse',
+  layout_config TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  section_id TEXT REFERENCES project_sections(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'todo',
+  priority TEXT NOT NULL DEFAULT 'medium',
+  due_date TEXT NOT NULL DEFAULT '',
+  memo TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_important INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE notes (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  note_type TEXT NOT NULL DEFAULT 'note',
+  body TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  display_updated_at TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+```
+
+### 6.6.4 附件方案
+
+附件本体不放入 SQLite。正式桌面阶段使用 Tauri 将文件复制到应用数据目录，SQLite 仅保存元数据和相对路径。
+
+推荐附件关联使用约束式多列外键，而不是纯 `owner_type + owner_id`。
+
+```sql
+CREATE TABLE attachments (
+  id TEXT PRIMARY KEY,
+  project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+  note_id TEXT REFERENCES notes(id) ON DELETE CASCADE,
+  original_name TEXT NOT NULL,
+  stored_name TEXT NOT NULL UNIQUE,
+  relative_path TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'Document',
+  display_size TEXT NOT NULL DEFAULT '',
+  mime_type TEXT,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (project_id IS NOT NULL) +
+    (task_id IS NOT NULL) +
+    (note_id IS NOT NULL) = 1
+  )
+);
+```
+
+取舍：
+
+- 不采用纯 `owner_type + owner_id`，因为 SQLite 无法对多态 owner 建立完整外键，容易产生孤儿附件。
+- 当前只允许附件关联项目、任务或笔记，约束清晰、级联可靠。
+- 未来如果出现客户、供应商等新实体，可迁移为 `attachment_links` 或增加明确外键列。
+
+文件一致性方案：
+
+- 添加附件：先复制文件到 `attachments/{uuid}/{stored_name}`，再写数据库。
+- 删除附件：先删除数据库记录，再删除文件；若文件删除失败，记录待清理项，后续启动时扫描孤儿文件。
+- 删除项目、任务、笔记：SQLite 级联删除附件记录；应用层事务完成后清理对应文件目录。
+
+### 6.6.5 标签方案
+
+标签同样采用约束式关联，当前支持项目、任务、笔记。
+
+```sql
+CREATE TABLE tags (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  color TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(workspace_id, name)
+);
+
+CREATE TABLE entity_tags (
+  id TEXT PRIMARY KEY,
+  tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES tasks(id) ON DELETE CASCADE,
+  note_id TEXT REFERENCES notes(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  CHECK (
+    (project_id IS NOT NULL) +
+    (task_id IS NOT NULL) +
+    (note_id IS NOT NULL) = 1
+  )
+);
+
+CREATE UNIQUE INDEX uniq_entity_tags_project
+  ON entity_tags(tag_id, project_id)
+  WHERE project_id IS NOT NULL;
+
+CREATE UNIQUE INDEX uniq_entity_tags_task
+  ON entity_tags(tag_id, task_id)
+  WHERE task_id IS NOT NULL;
+
+CREATE UNIQUE INDEX uniq_entity_tags_note
+  ON entity_tags(tag_id, note_id)
+  WHERE note_id IS NOT NULL;
+```
+
+### 6.6.6 配置表
+
+```sql
+CREATE TABLE factory_options (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  color TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(workspace_id, name)
+);
+
+CREATE TABLE settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE schema_migrations (
+  version TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);
+```
+
+### 6.6.7 推荐索引
+
+```sql
+CREATE INDEX idx_projects_workspace ON projects(workspace_id, sort_order);
+CREATE INDEX idx_projects_status ON projects(workspace_id, status);
+CREATE INDEX idx_sections_project ON project_sections(project_id, sort_order);
+CREATE INDEX idx_tasks_project ON tasks(project_id, sort_order);
+CREATE INDEX idx_tasks_section ON tasks(section_id, sort_order);
+CREATE INDEX idx_tasks_status ON tasks(project_id, status);
+CREATE INDEX idx_notes_project ON notes(project_id, sort_order);
+CREATE INDEX idx_attachments_project ON attachments(project_id);
+CREATE INDEX idx_attachments_task ON attachments(task_id);
+CREATE INDEX idx_attachments_note ON attachments(note_id);
+CREATE INDEX idx_entity_tags_tag ON entity_tags(tag_id);
+```
+
+### 6.6.8 删除和级联策略
+
+- 删除 workspace：级联删除全部业务数据。
+- 删除 project：级联删除 sections、tasks、notes、attachments、标签关联。
+- 删除 section：级联删除子 section；tasks 的 `section_id` 使用 `ON DELETE SET NULL`，避免误删任务。
+- 删除 task 或 note：级联删除其附件记录和标签关联。
+- 删除 tag：级联删除 `entity_tags`，不影响业务实体。
+
+### 6.6.9 用户显示名称和颜色
+
+`entity_type_configs` 用于分离内部类型和用户显示名称。
+
+示例：
+
+| system_type | display_name |
+|---|---|
+| `project` | 规划机型 / 客户 / 课题 |
+| `section` | 对应内容 / 阶段 / 模块 |
+| `task` | 作业 / 待办 / 实验任务 |
+| `note` | 提要 / 记录 / 跟进纪要 |
+
+用户修改词条时，只更新 `display_name`、`icon`、`color`、`sort_order`、`is_enabled`，不修改底层 `system_type`。
+
+### 6.6.10 未来 Node + Template + View 抽象
+
+当前不建立完整模板系统。未来需要抽象为看板模型和树状图映射 Skill 时，可新增：
+
+```txt
+templates
+template_entity_types
+template_sections
+template_views
+```
+
+迁移路径：
+
+1. 将当前 `entity_type_configs` 提升为模板中的实体类型配置。
+2. 将 `projects / project_sections / tasks / notes` 映射为模板实例数据。
+3. 使用 `view_type` 和 `layout_config` 映射列表、看板、折叠栏、抽屉、时间线等展示形式。
+4. 保持底层允许的节点类型和关系类型有限、明确、可验证，不开放完全任意递归。
+
+### 6.6.11 当前实现与预留边界
+
+当前建议实现：
+
+- 清晰业务表。
+- repository 替换策略。
+- JSON 导入数据到 SQLite 的迁移逻辑。
+- 附件元数据表和文件路径策略。
+- 标签表和约束式关联表。
+
+当前只做预留：
+
+- 完整模板系统。
+- 通用 Node 表。
+- 多视图布局引擎。
+- 任意层级树编辑器。
+- Skill 自动生成 UI/DB 的模板编译流程。
+
+### 6.6.12 第一版 migration 拆分
+
+```txt
+001_core_workspace_and_configs.sql
+002_projects_sections_tasks.sql
+003_notes_attachments_tags.sql
+004_settings_and_factory_options.sql
+005_seed_default_workspace.sql
+```
+
+### 6.6.13 示例数据
+
+```sql
+INSERT INTO workspaces VALUES
+('ws_default', '本地工作看板', '', '2026-07-13T00:00:00.000Z', '2026-07-13T00:00:00.000Z');
+
+INSERT INTO projects (
+  id, workspace_id, title, description, status, priority, progress,
+  development_factory, manufacturing_factory, sort_order, is_pinned, is_archived,
+  metadata_json, display_updated_at, created_at, updated_at
+) VALUES (
+  'p1', 'ws_default', 'MX-2400 模块化输送机', '样机开发推进', 'active', 'high', 68,
+  '苏州样机工厂', '宁波制造工厂', 0, 1, 0, NULL, '今天',
+  '2026-07-13T00:00:00.000Z', '2026-07-13T00:00:00.000Z'
+);
+
+INSERT INTO project_sections VALUES
+('s1', 'p1', NULL, '结构与传动方案', '2026-07-30', 0, 0, 0, 'collapse', NULL,
+ '2026-07-13T00:00:00.000Z', '2026-07-13T00:00:00.000Z');
+
+INSERT INTO tasks VALUES
+('t1', 'p1', 's1', '确认皮带张紧机构调整方案', 'doing', 'high', '2026-07-20',
+ '供应商图纸需二次确认', 0, 1,
+ '2026-07-13T00:00:00.000Z', '2026-07-13T00:00:00.000Z');
+
+INSERT INTO notes (
+  id, project_id, task_id, title, note_type, body, sort_order,
+  display_updated_at, created_at, updated_at
+) VALUES (
+  'n1', 'p1', NULL, '方案评审纪要', 'review', '张紧机构采用偏心调节方案。', 0,
+  '今天', '2026-07-13T00:00:00.000Z', '2026-07-13T00:00:00.000Z'
+);
+
+INSERT INTO attachments (
+  id, project_id, task_id, note_id, original_name, stored_name, relative_path,
+  kind, display_size, mime_type, size_bytes, note, created_at, updated_at
+) VALUES (
+  'a1', 'p1', NULL, NULL, 'BOM-样机版.xlsx', 'a1-bom.xlsx',
+  'attachments/a1/a1-bom.xlsx', 'Spreadsheet', '82 KB',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 83968, '样机采购清单',
+  '2026-07-13T00:00:00.000Z', '2026-07-13T00:00:00.000Z'
+);
+
+INSERT INTO tags VALUES
+('tag1', 'ws_default', '样机', '#2f6f62',
+ '2026-07-13T00:00:00.000Z', '2026-07-13T00:00:00.000Z');
+
+INSERT INTO entity_tags VALUES
+('et1', 'tag1', 'p1', NULL, NULL, '2026-07-13T00:00:00.000Z');
+```
+
+### 6.6.14 推荐结论
+
+当前最终推荐方案是：不做万能 `nodes` 表，采用清晰业务表，加少量配置表和展示字段预留。关键取舍如下：
+
+- 当前业务清晰度优先：项目、对应内容、任务、笔记、附件、标签都可查询、可约束。
+- 未来抽象能力通过 `entity_type_configs`、`view_type`、`layout_config`、`sort_order`、`parent_id` 预留。
+- 附件和标签优先完整外键约束，暂不使用纯多态关联。
+- 模板能力暂不实现，只保留未来可迁移入口。
+
 ## 7. 已实现功能清单
 
 ### 7.1 规划机型
@@ -341,6 +732,9 @@ type Attachment = {
 - 支持从同版本 JSON 文件导入并替换当前看板数据，导入成功或失败都会显示状态提示。
 - 支持重置回内置示例数据，并在重置后显示成功提示。
 - `storage.ts` 只负责数据解析与归一化，`repositories/boardRepository.ts` 负责持久化读写，`hooks/useBoardData.ts` 负责连接 React 状态与 repository，`hooks/useBoardActions.ts` 负责集中处理数据变更动作。
+- `repositories/sqliteBoardMapper.ts` 负责在 SQLite 关系表行和当前 `BoardData` 之间双向转换。
+- `repositories/sqliteBoardRepository.ts` 负责定义异步 SQLite repository 与 driver 契约。
+- `repositories/tauriSqliteBoardDriver.ts` 基于 `@tauri-apps/plugin-sql` 实现 SQLite 读写 driver。
 
 ## 8. 当前示例数据
 
@@ -360,8 +754,10 @@ type Attachment = {
 
 ## 9. 当前限制
 
-- 当前 repository 实现仍依赖浏览器 `localStorage`，还不是正式数据库。
-- 尚未接入 IndexedDB、SQLite 或 Tauri 文件系统。
+- 浏览器预览仍使用 `localStorage`，Tauri 桌面环境使用 SQLite。
+- 已接入 Tauri SQL 插件和 SQLite migration，并完成桌面端重启恢复验收。
+- 真实附件文件复制/打开尚未接入 Tauri 文件系统。
+- 当前 SQLite 保存策略是按 workspace 整体替换业务行，后续可按操作粒度优化。
 - 附件只维护元数据，尚不能选择、复制或打开真实本地文件。
 - 尚未实现拖拽排序。
 - 尚未实现真实文件附件存储。
@@ -372,21 +768,21 @@ type Attachment = {
 
 下一步建议继续完善结构和数据安全：
 
-1. 设计 SQLite 表结构和 repository 替换策略。
-2. 梳理导入/导出与未来 SQLite 迁移之间的数据版本策略。
-3. SQLite 更适合放到 Tauri 桌面化后的正式本地数据库阶段，再结合 Drizzle ORM、迁移和真实附件目录管理一起设计。
+1. 接入真实附件文件选择、复制、打开和清理流程。
+2. 为 SQLite repository 增加基础自动化测试或脚本级回归验证。
+3. 将当前 SQLite 整体替换保存逐步优化为操作级写入。
 
 ## 11. 未来技术路线
 
 ### 11.1 短期
 
-- 梳理 SQLite 表结构草案。
+- 设计真实附件目录和文件生命周期。
+- 为 SQLite repository 增加脚本级回归验证。
 - 梳理导入/导出与数据迁移策略。
 
 ### 11.2 中期
 
-- 设计 SQLite 表结构和 repository 替换策略。
-- 为 Tauri 桌面化设计 SQLite + Drizzle 数据层。
+- 视复杂度决定是否继续引入 Drizzle ORM。
 - 设计数据迁移。
 - 加入导入/导出。
 - 增加基础测试。
@@ -402,11 +798,26 @@ type Attachment = {
 ## 12. 当前文件结构
 
 ```txt
-MCP-Lab/
+product dev desk/
+  db/
+    migrations/
+      001_core_workspace_and_configs.sql
+      002_projects_sections_tasks.sql
+      003_notes_attachments_tags.sql
+      004_settings_and_factory_options.sql
+      005_seed_default_workspace.sql
   docs/
     product-plan.md
   scripts/
     preview-dist.mjs
+  src-tauri/
+    capabilities/
+      default.json
+    src/
+      lib.rs
+      main.rs
+    Cargo.toml
+    tauri.conf.json
   src/
     components/
       AppNotice.tsx
@@ -423,7 +834,11 @@ MCP-Lab/
       useBoardData.ts
       useNotice.ts
     repositories/
+      activeBoardRepository.ts
       boardRepository.ts
+      sqliteBoardMapper.ts
+      sqliteBoardRepository.ts
+      tauriSqliteBoardDriver.ts
     utils/
       factoryColors.ts
       progress.ts
@@ -465,6 +880,25 @@ npm run build
 ```powershell
 npm run build
 npm run preview
+```
+
+桌面开发模式：
+
+```powershell
+npm run desktop
+```
+
+桌面安装包构建：
+
+```powershell
+npm run desktop:build
+```
+
+当前已验证可生成：
+
+```txt
+src-tauri/target/release/bundle/msi/product-dev-desk_0.1.0_x64_en-US.msi
+src-tauri/target/release/bundle/nsis/product-dev-desk_0.1.0_x64-setup.exe
 ```
 
 浏览器访问：

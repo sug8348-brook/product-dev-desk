@@ -3,10 +3,12 @@ import { initialFactoryOptions, initialProjects } from "../data/initialData";
 import { parseStoredBoardData } from "../storage";
 import type { BoardData, StoredBoardData } from "../types";
 
+export type MaybePromise<T> = T | Promise<T>;
+
 export type BoardRepository = {
-  load: () => BoardData;
-  save: (data: BoardData) => void;
-  reset: () => BoardData;
+  load: () => MaybePromise<BoardData>;
+  save: (data: BoardData) => MaybePromise<void>;
+  reset: () => MaybePromise<BoardData>;
   parseImport: (value: unknown) => BoardData | null;
   createExport: (data: BoardData) => StoredBoardData;
 };
